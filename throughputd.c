@@ -132,6 +132,45 @@ static struct sigaction signal_action = {
 	.sa_handler = signal_handler,
 };
 
+void logToRixT(time_t time, int newLine)
+{
+    FILE *rixLog = NULL;
+    rixLog = fopen("/tmp/rixd.log", "a");
+    fprintf(rixLog, "%ld", time);
+
+    if (newLine == 1) {
+        fputs("\n", rixLog);
+    }
+
+    fclose(rixLog);
+}
+
+void logToRixM(const char *message, int newLine)
+{
+    FILE *rixLog = NULL;
+    rixLog = fopen("/tmp/rixd.log", "a");
+    fputs(message, rixLog);
+
+    if (newLine == 1) {
+        fputs("\n", rixLog);
+    }
+
+    fclose(rixLog);
+}
+
+void logToRixI(int code, int newLine)
+{
+    FILE *rixLog = NULL;
+    rixLog = fopen("/tmp/rixd.log", "a");
+    fprintf(rixLog, "%d", code);
+
+    if (newLine == 1) {
+        fputs("\n", rixLog);
+    }
+
+    fclose(rixLog);
+}
+
 /*************************** Recording Logic ****************************/
 
 static int record_entry(struct hashtable *records, struct hashtable_link *hl, void *data){
@@ -142,6 +181,11 @@ static int record_entry(struct hashtable *records, struct hashtable_link *hl, vo
 	
 	ret = sqlite3_prepare_v2(db, insert_stmt, strlen(insert_stmt), &stmt, NULL);
 	if(ret != SQLITE_OK){
+        logToRixM((char *) "error preparing insert statement - message: ", 0);
+        logToRixM(sqlite3_errmsg(db), 1);
+        logToRixM((char *) "error preparing insert statement - code: ", 0);
+        logToRixI(sqlite3_errcode(db), 1);
+
 		PRINT_ERROR(ret, "error preparing insert statement: %s", sqlite3_errmsg(db));
 		goto error;
 	}
@@ -154,18 +198,27 @@ static int record_entry(struct hashtable *records, struct hashtable_link *hl, vo
 	
 	ret = sqlite3_step(stmt);
 	if(ret != SQLITE_DONE) {
+        logToRixM((char *) "error executing insert statement - message: ", 0);
+        logToRixM(sqlite3_errmsg(db), 1);
+        logToRixM((char *) "error executing insert statement - code: ", 0);
+        logToRixI(sqlite3_errcode(db), 1);
+
 		PRINT_ERROR(ret, "error executing insert statement");
 		goto error;
 	}
-	
+
 	sqlite3_finalize(stmt);
-	
+
 	hashtable_delete(records, hl->key);
 	free(record);
-	
+
+    logToRixM((char *) "Record entry is good!", 1);
+
 	return 0;
 	
 error:
+    logToRixM((char*) "record_entry... fuck", 1);
+
 	PRINT_ERROR(ret, "error recording entry");
 	if(stmt) sqlite3_finalize(stmt);
 	return ret;
@@ -176,11 +229,16 @@ static void *recording_thread(void *unused){
 	char transaction_exists = 0;
 	time_t cur_time;
 	struct throughputd_context *ctx;
-	
+
+    logToRixM((char *) "Starting recording thread....", 1);
+
 	while(!should_stop_recording){
 		sleep(RECORDING_THREAD_SLEEP_TIME);
 		
 		if(sleep_cnt + 1 < record_interval){
+            logToRixM((char *) "sleep count is less than record interval : ", 0);
+            logToRixI(sleep_cnt, 1);
+
 			sleep_cnt++;
 			continue;
 		}
@@ -189,9 +247,14 @@ static void *recording_thread(void *unused){
 		
 		PRINT_DEBUG("interval elapsed, recording current state");
 		cur_time = time(NULL);
-		
+
+        logToRixM((char *) "Starting transaction @ ", 0);
+        logToRixT(cur_time, 1);
+
 		ret = sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
 		if(ret != SQLITE_OK){
+            logToRixM((char *) "Could not start transaction...", 1);
+
 			PRINT_ERROR(ret, "error beginning transaction");
 			goto error;
 		}
@@ -200,24 +263,44 @@ static void *recording_thread(void *unused){
 		for(i = 0; i < context_count; i++){
 			ctx = &throughputd_contexts[i];
 			ctx->cur_time = cur_time;
-			
+
+            logToRixM((char *) "Attempting to attain a lock on resources... ", 1);
+
 			pthread_mutex_lock(&ctx->lock);
-			
-			PRINT_DEBUG("recording current state for %s", ctx->ifaddr->ifa_name);
+
+            logToRixM((char *) "Lock acquired... ", 1);
+
+            PRINT_DEBUG("recording current state for %s", ctx->ifaddr->ifa_name);
 			ret = hashtable_for_each_key(&ctx->records, record_entry, ctx);
-			if(ret) goto error;
-			
-			pthread_mutex_unlock(&ctx->lock);
+
+            if(ret) {
+                logToRixM((char *) "Lock acquired but error occurred - can't resolve lock.", 1);
+                goto error;
+            } else {
+                pthread_mutex_unlock(&ctx->lock);
+                logToRixM((char *) "Lock acquired - no error - no lock", 1);
+            }
 		}
-		
+
+
+        logToRixM((char *) "Attempting to commit transaction ... ", 0);
+
 		PRINT_DEBUG("committing transaction");
 		ret = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
 		if(ret != SQLITE_OK){
+            logToRixM("commit failed because: ", 0);
+            logToRixM(sqlite3_errmsg(db), 1);
+            logToRixM("error code : ", 0);
+            logToRixI(sqlite3_errcode(db), 1);
 			PRINT_ERROR(ret, "error committing transaction");
 			goto error;
 		}
+
+        logToRixM((char *) "Commit worked...", 1);
 		transaction_exists = 0;
 	}
+
+    logToRixM((char *) "Why the fuck am I not recording anymore??", 1);
 	
 	return NULL;
 	
@@ -232,22 +315,35 @@ error:
 static int throughputd_record_alloc(char *ip, struct throughputd_record **record_out){
 	int ret;
 	struct throughputd_record *record;
-	
+
+    logToRixM((char *) "Allocating new record... ", 0);
+
 	PRINT_DEBUG("allocating new record");
 	record = malloc(sizeof(struct throughputd_record));
 	if(!record){
 		ret = ENOMEM;
+
+        logToRixM((char *) "Not enough memory for the record to be allocated", 1);
+        logToRixM((char *) "Error code for ENOMEM: ", 0);
+        logToRixI(ret, 1);
+
 		PRINT_ERROR(ret, "error allocating new record");
 		
 		*record_out = NULL;
 		return ret;
 	}
-	
+
+    logToRixM((char *) "ENOMEM did not occur lets keep going.", 1);
+
+
 	record->recv_total = 0; 
 	record->send_total = 0;
 	strncpy(record->lan_ip, ip, INET6_ADDRSTRLEN);
 
 	*record_out = record;
+
+    logToRixM((char *) "record alloc finished", 1);
+
 	return 0;
 }
 
@@ -255,33 +351,59 @@ static int update_record(struct throughputd_context *ctx, char *ip, uint64_t dat
 	int ret;
 	struct throughputd_record *record;
 	struct hashtable_link *hl;
-	
+
+    logToRixM((char *) "Updating record for whatever reason... attempting to lock ... ", 1);
+
 	pthread_mutex_lock(&ctx->lock);
-	
+
+    logToRixM((char *) "The lock worked for this... attempting find record....", 1);
+
 	hl = hashtable_find(&ctx->records, ip);
 	if(!hl){
+
+        logToRixM((char *) "Could not find record - allocating now ... ", 0);
+
 		PRINT_DEBUG("existing record not found, adding new record");
 		ret = throughputd_record_alloc(ip, &record);
-		if(ret) goto error;
+
+        // if enough memory : 0 otherwise 0++ = true... goto error.
+        if(ret) {
+            logToRixM((char *) "Can not update record - attempting to unlock...", 0);
+            goto error;
+        } else {
+            logToRixM((char *) "Record updated inserting a new record now...", 1);
+        }
+
+
 		
 		ret = hashtable_insert(&ctx->records, record->lan_ip, &record->link);
 		if(ret){
+            logToRixM((char *) "Fuck you mean this shouldn't happen????", 1);
+
 			PRINT_ERROR(ret, "error inserting new record into hashtable: This shouldn't happen");
 			goto error;
 		}
-	}else record = container_of(hl, struct throughputd_record, link);
+	} else {
+        logToRixM((char *) "Record was found in the hash table.", 1);
+        record = container_of(hl, struct throughputd_record, link);
+    }
 	
 	if(is_recv) record->recv_total += datalen;
 	else record->send_total += datalen;
 	
 	pthread_mutex_unlock(&ctx->lock);
+
+    logToRixM((char *) "Some shit about locking happened", 1);
 	
 	return 0;
 	
 error:
 	PRINT_ERROR(ret, "error updating record for packet");
 	pthread_mutex_unlock(&ctx->lock);
-	return ret;
+
+    logToRixM((char *) "Lets hope the lock was removed...", 1);
+
+    return ret;
 }
 
 /*************************** Packet Specific Handlers ****************************/
@@ -383,33 +505,53 @@ static void *interface_listening_thread(void *data){
 	int ret;
 	struct throughputd_context *ctx = (struct throughputd_context *)data;
 
+    logToRixM((char *) "begining processing loop", 1);
+
 	PRINT_DEBUG("beginning processing loop");
 	ret = pcap_loop(ctx->pcap_fd, -1, on_packet_received, data);
 	if(ret != 0 && ret != -2){
+        logToRixM((char *) "Some bullshit about pcap loop not running", 1);
+
 		PRINT_ERROR(ret, "error running pcap loop");
 		return NULL;
 	}
-	
+
+    logToRixM((char *) "Exiting process loop... wtf?", 1);
 	PRINT_DEBUG("exiting processing loop");
 
 	return NULL;
 }
 
 static int initialize_thread_context(struct throughputd_context *ctx, struct ifaddrs *interface){
-	int ret;
+
+    logToRixM((char *) "Initializing thread context ... ", 1);
+
+    int ret;
 	char hashtable_initialized = 0, mutex_intialized = 0;
 	char errbuf[PCAP_ERRBUF_SIZE];
 	
 	ctx->ifaddr = interface;
-	
+
+    logToRixM((char *) "Attempting to initialize thread ctx", 1);
+
 	PRINT_DEBUG("initializing hashtable");
 	ret = hashtable_init(&ctx->records, HASHTABLE_ARRAY_SIZE);
-	if(ret) goto error;
+
+    if(ret) {
+        logToRixM((char *) "hash table not initialized", 1);
+        goto error;
+    }
+
 	hashtable_initialized = 1;
 	
+
+    logToRixM((char *) "Initializing mutex", 1);
+
 	PRINT_DEBUG("initializing mutex");
 	ret = pthread_mutex_init(&ctx->lock, NULL);
 	if(ret){
+
+        logToRixM((char *) "Mutex not initialized", 1);
 		PRINT_ERROR(ret, "error initializing mutex");
 		goto error;
 	}
@@ -418,14 +560,24 @@ static int initialize_thread_context(struct throughputd_context *ctx, struct ifa
 	PRINT_DEBUG("opening device %s for listening", interface->ifa_name);
 	ctx->pcap_fd = pcap_open_live(interface->ifa_name, PACKET_BUF_LEN, 0, PCAP_TIMEOUT_MS, errbuf);
 	if(!ctx->pcap_fd){
+
+        logToRixM((char *) "Could not open pcap device : ", 0);
+        logToRixM((char *) interface->ifa_name, 1);
+
 		ret = EFAULT;
 		PRINT_ERROR(ret, "error opening pcap device %s", errbuf);
 		goto error;
 	}
 	
 	PRINT_DEBUG("creating thread");
+
+    logToRixM((char *) "starting trafic monitoring thread", 1);
+
 	ret = pthread_create(&ctx->thread, NULL, interface_listening_thread, ctx);
 	if(ret){
+
+        logToRixM((char *) "FUUUUUCCCCK!! monitoring thread not starting", 1);
+
 		PRINT_ERROR(ret, "error starting trafic monitoring thread");
 		goto error;
 	}
@@ -469,9 +621,16 @@ static int context_already_exists(char *ifname){
 	int i;
 	
 	for(i = 0; i < context_count; i++){
-		if(!strcmp(throughputd_contexts[i].ifaddr->ifa_name, ifname)) return 1;
+		if(!strcmp(throughputd_contexts[i].ifaddr->ifa_name, ifname)) {
+            logToRixM((char *) "Context already exists... for some reason?", 1);
+
+
+            return 1;
+        }
 	}
-	
+
+    logToRixM((char *) "Context does not exists", 1);
+
 	return 0;
 }
 
@@ -493,6 +652,9 @@ static void throughputd_cleanup(void){
 	PRINT_DEBUG("cleaning up all allocations");
 	
 	for(i = 0; i < context_count; i++){
+        logToRixM((char *) "Cleaning shit up #", 0);
+        logToRixI(i, 1);
+
 		ctx = &throughputd_contexts[i];
 		
 		PRINT_DEBUG("waiting for thread to stop");
@@ -520,9 +682,6 @@ static void throughputd_cleanup(void){
 }
 
 int main(int argc, char **argv){
-    printf("FUCK OFF");
-    return 0;
-
 	int ret, c, i, if_count = 0;
 	FILE *pid_fd = NULL;
 	char addr_str[INET6_ADDRSTRLEN];
@@ -586,6 +745,10 @@ int main(int argc, char **argv){
 		pid_fd = fopen(pid_file, "w");
 		if(!pid_fd) {
 			ret = errno;
+
+            logToRixM((char *) "Error opening PID file", 1);
+
+
 			PRINT_ERROR(ret, "error opening pid file for writing");
 			goto error;
 		}
@@ -594,6 +757,9 @@ int main(int argc, char **argv){
 		ret = fprintf(pid_fd, "%d\n", getpid());
 		if(ret < 0){
 			ret = errno;
+
+            logToRixM((char *) "Error writing to PID file", 1);
+
 			PRINT_ERROR(ret, "error writing pid to pid file");
 			goto error;
 		}
@@ -616,17 +782,23 @@ int main(int argc, char **argv){
 	if(ret){
 		PRINT_ERROR(ret, "error registering SIGTERM signal handler");
 		goto error;
-	}
+	} else {
+        logToRixM((char *) "terminating process... hmmmmm", 1);
+    }
 	
 	ret = sigaction(SIGINT, &signal_action, NULL);
 	if(ret){
 		PRINT_ERROR(ret, "error registering SIGINT signal handler");
 		goto error;
-	}
+	} else {
+        logToRixM((char *) "signal interupt.", 1);
+    }
 	
 	PRINT_DEBUG("opening sqlite database file %s", dbname);
 	ret = sqlite3_open(dbname, &db);
 	if(ret){
+        logToRixM((char *) "Cant open db file.... fuck ", 1);
+
 		PRINT_ERROR(ret, "error opening sqlite database");
 		goto error;
 	}
@@ -636,6 +808,8 @@ int main(int argc, char **argv){
 	if(ret < 0){
 		create_stmt = NULL;
 		ret = EFAULT;
+        logToRixM((char *) "cant create table statement", 1);
+
 		PRINT_ERROR(ret, "error composing create table statement");
 		goto error;
 	}
@@ -643,6 +817,10 @@ int main(int argc, char **argv){
 	PRINT_DEBUG("creating table (if it doesnt exist already)");
 	ret = sqlite3_exec(db, create_stmt, NULL, NULL, NULL);
 	if(ret != SQLITE_OK){
+
+
+        logToRixM((char *) "cant create table for our records.", 1);
+
 		PRINT_ERROR(ret, "error creating sqlite table for records");
 		goto error;
 	}
@@ -654,6 +832,9 @@ int main(int argc, char **argv){
 	if(ret < 0){
 		index_stmt = NULL;
 		ret = EFAULT;
+
+        logToRixM((char *) "cant compose index statement", 1);
+
 		PRINT_ERROR(ret, "error composing create index statement");
 		goto error;
 	}
@@ -661,7 +842,9 @@ int main(int argc, char **argv){
 	PRINT_DEBUG("creating timestamp index");
 	ret = sqlite3_exec(db, index_stmt, NULL, NULL, NULL);
 	if(ret != SQLITE_OK){
-		PRINT_ERROR(ret, "error creating timestamp index");
+        logToRixM((char *) "cant create timestamp index", 1);
+
+        PRINT_ERROR(ret, "error creating timestamp index");
 		goto error;
 	}
 	free(index_stmt);
@@ -670,7 +853,10 @@ int main(int argc, char **argv){
 	PRINT_DEBUG("composing insert statement");
 	ret = asprintf(&insert_stmt, SQL_INSERT_RECORD_STMT, db_table_name);
 	if(ret < 0){
-		insert_stmt = NULL;
+
+        logToRixM((char *) "cant compose insert statement", 1);
+
+        insert_stmt = NULL;
 		ret = EFAULT;
 		PRINT_ERROR(ret, "error composing insert statement");
 		goto error;
@@ -679,7 +865,11 @@ int main(int argc, char **argv){
 	PRINT_DEBUG("fetching list of all network interfaces");
 	ret = getifaddrs(&ifaddrs);
 	if(ret){
-		PRINT_ERROR(ret, "error fetching list of network interfaces");
+
+        logToRixM((char *) "error fetching network interfaces", 1);
+
+
+        PRINT_ERROR(ret, "error fetching list of network interfaces");
 		goto error;
 	}
 	
@@ -706,8 +896,16 @@ int main(int argc, char **argv){
 	}else{
 		PRINT_DEBUG("%d interfaces specified, checking that they all exist", if_count);
 		for(i = 0; i < if_count; i++){
-			if(interface_exists(interface_names[i])) PRINT_DEBUG("found interface %s", interface_names[i]);
-			else{
+			if(interface_exists(interface_names[i])) {
+                logToRixM((char *) "found interface : ", 0);
+                logToRixM(interface_names[i], 1);
+
+                PRINT_DEBUG("found interface %s", interface_names[i]);
+            } else{
+
+                logToRixM((char *) "Could not find interface : ", 0);
+                logToRixM(interface_names[i], 1);
+
 				ret = EINVAL;
 				PRINT_ERROR(ret, "could not find interface %s", interface_names[i]);
 				goto error;
@@ -719,7 +917,11 @@ int main(int argc, char **argv){
 	throughputd_contexts = malloc(if_count * sizeof(struct throughputd_context));
 	if(!throughputd_contexts){
 		ret = ENOMEM;
-		PRINT_ERROR(ret, "error allocating context array");
+
+        logToRixM((char *) "main: COULD NOT ALLOCATE MEMORY.", 1);
+
+
+        PRINT_ERROR(ret, "error allocating context array");
 		goto error;
 	}
 	
@@ -742,21 +944,34 @@ int main(int argc, char **argv){
 	PRINT_DEBUG("creating recording thread");
 	ret = pthread_create(&recording_pthread, NULL, recording_thread, NULL);
 	if(ret){
-		PRINT_ERROR(ret, "error starting trafic monitoring thread");
+
+
+        logToRixM((char *) "MAIN : cant start traffic monitoring thred.", 1);
+
+
+        PRINT_ERROR(ret, "error starting trafic monitoring thread");
 		goto error;
 	}
 
 	PRINT_DEBUG("joining main thread with recording thread");
 	ret = pthread_join(recording_pthread, NULL);
 	if(ret){
-		PRINT_ERROR(ret, "error joining main thread with recording thread");
+
+        logToRixM((char *) "Cant join main thread... in MAIN!!", 1);
+
+
+        PRINT_ERROR(ret, "error joining main thread with recording thread");
 		goto error;
 	}
-	
+
+
+
 	throughputd_cleanup();
 	return 0;
 	
 error:
+    logToRixM((char *) "error in the main function... fuck.", 1);
+
 	PRINT_ERROR(ret, "error during main function");
 	if(ret == EINVAL) printf(USAGE, argv[0]);
 	
