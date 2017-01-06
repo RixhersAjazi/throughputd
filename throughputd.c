@@ -520,7 +520,7 @@ static void throughputd_cleanup(void){
 }
 
 int main(int argc, char **argv){
-    cout << "FUCK OFF";
+    printf("FUCK OFF");
     return 0;
 
 	int ret, c, i, if_count = 0;
