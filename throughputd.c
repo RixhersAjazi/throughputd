@@ -966,7 +966,7 @@ int main(int argc, char **argv){
 
 
 
-	throughputd_cleanup();
+	//throughputd_cleanup();
 	return 0;
 	
 error:
