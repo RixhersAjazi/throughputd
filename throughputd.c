@@ -251,7 +251,7 @@ static void *recording_thread(void *unused){
         logToRixM((char *) "Starting transaction @ ", 0);
         logToRixT(cur_time, 1);
 
-		ret = sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
+		ret = sqlite3_exec(db, "BEGIN IMMEDIATE;", NULL, NULL, NULL);
 		if(ret != SQLITE_OK){
             logToRixM((char *) "Could not start transaction...", 1);
 
@@ -966,7 +966,7 @@ int main(int argc, char **argv){
 
 
 
-	//throughputd_cleanup();
+	throughputd_cleanup();
 	return 0;
 	
 error:
