@@ -251,6 +251,7 @@ static void *recording_thread(void *unused){
         logToRixM((char *) "Starting transaction @ ", 0);
         logToRixT(cur_time, 1);
 
+        sqlite3_busy_timeout(db, 100);
 		ret = sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
 		if(ret != SQLITE_OK){
             logToRixM((char *) "Could not start transaction...", 1);
@@ -693,8 +694,6 @@ int main(int argc, char **argv){
 	char *dbname = DEFAULT_DBFILE_NAME;
 	char *db_table_name = DEFAULT_TABLE_NAME;
 	char **interface_names = NULL;
-    sqlite3_busy_timeout(db, 100);
-
 
 #ifndef DEBUG_ENABLED
 	int daemonize = 0;
